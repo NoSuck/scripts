@@ -20,6 +20,9 @@
 # (this script requires WeeChat 0.3.0 or newer)
 #
 # History:
+# 2018-11-05, Gid Weems <WiiMote@gmail.com>
+#   version 0.2.4: added UTC; added local_time, message_format, notify_format,
+#   and time_format options; corrected misuse of config_is_set_plugin
 # 2015-04-29, Colgate Minuette <rabbit@minuette.net>
 #   version 0.2.3: add option to send queued messages on /nick
 # 2013-11-08, Stefan Huber <shuber@sthu.org>
@@ -34,27 +37,34 @@
 import weechat as w
 import re
 from datetime import datetime
-from time import strftime
+from time import gmtime, strftime, mktime
 
 SCRIPT_NAME    = "postpone"
 SCRIPT_AUTHOR  = "Alexander Schremmer <alex@alexanderweb.de>"
-SCRIPT_VERSION = "0.2.3"
+SCRIPT_VERSION = "0.2.4"
 SCRIPT_LICENSE = "GPL3"
 SCRIPT_DESC    = "Postpones written messages for later dispatching if target nick is not on channel"
 
 postpone_data = {}
 
 settings = {
-        'match_prefix': ('', 'Postpone message if prefix before "nick:" is matched. (Default: "")'),
-        'message_on_nick': ('off', 'Send message on /nick in addition to /join (Default: off)')
+        'local_time': ('off', 'Pass local time, not UTC, to time_format.'),
+        'match_prefix': ('', 'Postpone message if prefix before "nick:" is matched.'),
+        'message_format': ('{0}: {1} (This message was postponed on {2}.)', 'Use this replacement-field-style format string for postponed messages, passing the nick, original message, and timestamp.'),
+        'message_on_nick': ('off', 'Send message on /nick in addition to /join.'),
+        'notify_format' : ('| Enqueued message for {0}: {1}', 'Use this replacement-field-style format string to notify that a message has been postponed, passing the nick and the message.'),
+        'time_format': ('%Y-%m-%d %H:%M:%S UTC', 'Use this strftime-style format string for timestamps.'),
 }
 
 def send_messages(server, channel, nick):
     buffer = w.buffer_search("", "%s.%s" % (server, channel))
     messages = postpone_data[server][channel][nick]
     for time, msg in messages:
-        tstr = strftime("%Y-%m-%d %H:%M:%S", time.timetuple())
-        w.command(buffer, msg + " (This message has been postponed on " + tstr + ".)")
+        tstr = strftime(w.config_get_plugin('time_format'), time.timetuple()
+                if w.config_get_plugin('local_time') == 'off' else
+                gmtime(mktime(time.timetuple())))
+        w.command(buffer, w.config_get_plugin('message_format').format(nick,
+                msg, tstr))
     messages[:] = []
 
 def join_cb(data, signal, signal_data):
@@ -69,8 +79,6 @@ def join_cb(data, signal, signal_data):
 
 def nick_cb(data, signal, signal_data):
 
-    if not w.config_is_set_plugin('message_on_nick'):
-        return w.WEECHAT_RC_OK
     if not w.config_get_plugin('message_on_nick').lower() == "on":
         return w.WEECHAT_RC_OK
 
@@ -101,8 +109,9 @@ def command_run_input(data, buffer, command):
         if match:
             nick, message = match.groups()
             if not channel_has_nick(server, channel, nick):
-                w.prnt(buffer, "| Enqueued message for %s: %s" % (nick, message))
-                save = datetime.now(), nick + ": " + message
+                w.prnt(buffer, w.config_get_plugin('notify_format').format(nick,
+                        message))
+                save = datetime.now(), message
                 postpone_data.setdefault(server, {}).setdefault(channel,
                         {}).setdefault(nick.lower(), []).append(save)
                 w.buffer_set(buffer, 'input', "")
@@ -122,7 +131,8 @@ if w.register(SCRIPT_NAME, SCRIPT_AUTHOR, SCRIPT_VERSION, SCRIPT_LICENSE,
         if not w.config_is_set_plugin(option):
             w.config_set_plugin(option, default_desc[0])
         if int(version) >= 0x00030500:
-            w.config_set_desc_plugin(option, default_desc[1])
+            w.config_set_desc_plugin(option, '%s (Default: "%s")' %
+                (default_desc[1], default_desc[0]))
 
     w.hook_command_run("/input return", "command_run_input", "")
     w.hook_signal('*,irc_in2_join', 'join_cb', '')
